@@ -1,0 +1,19 @@
+# Requires an ingress controller (minikube addons enable ingress).
+# Then add "<minikube ip> heart.local" to /etc/hosts and call http://heart.local/predict
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: heart-api
+  namespace: heart-mlops
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: heart.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: heart-api
+                port: {number: 80}

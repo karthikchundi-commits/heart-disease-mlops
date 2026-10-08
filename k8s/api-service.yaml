@@ -1,0 +1,13 @@
+# LoadBalancer: gets an external IP on a cloud cluster; on Minikube run
+# `minikube tunnel` (or use `minikube service heart-api -n heart-mlops --url`).
+apiVersion: v1
+kind: Service
+metadata:
+  name: heart-api
+  namespace: heart-mlops
+  labels: {app: heart-api}
+spec:
+  type: LoadBalancer
+  selector: {app: heart-api}
+  ports:
+    - {name: http, port: 80, targetPort: http}

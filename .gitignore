@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+mlruns/
+mlflow.db
+logs_*.txt
+.ipynb_checkpoints/
+.coverage
+coverage.xml
+logs/
+logs_*.txt

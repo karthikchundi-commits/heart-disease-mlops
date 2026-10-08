@@ -1,0 +1,150 @@
+name: ci-cd
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  IMAGE: heart-disease-api:1.0.0
+
+jobs:
+  # ---------------------------------------------------------------- 1. lint
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - run: pip install ruff==0.8.4
+      - name: ruff (fails the pipeline on any violation)
+        run: ruff check . --output-format=github
+
+  # ---------------------------------------------------------------- 2. unit tests
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ env.PYTHON_VERSION }}", cache: pip}
+      - run: pip install -r requirements.txt
+      - name: pytest
+        run: pytest -v --cov=heart --cov-report=term-missing --cov-report=xml --junitxml=junit.xml
+      - name: test summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import xml.etree.ElementTree as ET
+          s = ET.parse("junit.xml").getroot().find("testsuite")
+          print(f"### Unit tests\n| tests | failures | errors | skipped | time |\n|---|---|---|---|---|")
+          print(f"| {s.get('tests')} | {s.get('failures')} | {s.get('errors')} | {s.get('skipped')} | {s.get('time')}s |")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: |
+            junit.xml
+            coverage.xml
+
+  # ---------------------------------------------------------------- 3. train
+  train:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ env.PYTHON_VERSION }}", cache: pip}
+      - run: pip install -r requirements.txt
+      - name: download + clean data
+        run: python -m heart.data
+      - name: EDA figures
+        run: python -m heart.eda
+      - name: train + track (MLflow)
+        run: python -m heart.train
+      - name: quality gate (CV ROC-AUC >= 0.80)
+        run: |
+          python - <<'PY'
+          import json, sys
+          m = json.load(open("models/model_meta.json"))
+          auc = m["metrics"]["cv_roc_auc"]
+          print(f"champion={m['model_name']} cv_roc_auc={auc}")
+          sys.exit(0 if auc >= 0.80 else "model below quality bar")
+          PY
+      - name: training summary
+        run: |
+          {
+            echo "### Model comparison"
+            python -c "import pandas as pd; d=pd.read_csv('reports/model_comparison.csv').round(4); print('|'+'|'.join(d.columns)+'|'); print('|'+'---|'*len(d.columns)); [print('|'+'|'.join(map(str,r))+'|') for r in d.values]"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model
+          path: models/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-tracking
+          path: |
+            mlflow.db
+            mlruns/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: |
+            reports/
+            data/processed/heart_clean.csv
+
+  # ---------------------------------------------------------------- 4. container
+  docker:
+    needs: train
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: model, path: models/}
+      - name: build image
+        run: docker build -t "$IMAGE" .
+      - name: run container + smoke test
+        run: |
+          docker run -d --name heart-api -p 8000:8000 "$IMAGE"
+          bash scripts/smoke_test.sh http://localhost:8000
+      - name: container logs
+        if: always()
+        run: docker logs heart-api
+      - name: save image
+        run: docker save "$IMAGE" | gzip > heart-api-image.tar.gz
+      - uses: actions/upload-artifact@v4
+        with: {name: docker-image, path: heart-api-image.tar.gz, retention-days: 5}
+
+  # ---------------------------------------------------------------- 5. deploy (ephemeral k8s)
+  deploy-kind:
+    needs: docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: docker-image}
+      - run: gunzip -c heart-api-image.tar.gz | docker load
+      - uses: helm/kind-action@v1
+        with: {cluster_name: heart}
+      - name: load image into kind
+        run: kind load docker-image "$IMAGE" --name heart
+      - name: deploy manifests
+        run: bash scripts/deploy_k8s.sh
+      - name: verify through the Service
+        run: |
+          kubectl -n heart-mlops port-forward svc/heart-api 8080:80 &
+          sleep 5
+          bash scripts/smoke_test.sh http://localhost:8080
+      - name: cluster state
+        if: always()
+        run: |
+          kubectl -n heart-mlops get all,ingress,hpa -o wide
+          kubectl -n heart-mlops logs deploy/heart-api --tail=30
