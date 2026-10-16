@@ -8,7 +8,10 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch  # noqa: E402
 
 OUT = Path(__file__).resolve().parents[1] / "docs" / "architecture.png"
-C = {"data": "#d6eaf8", "ml": "#d5f5e3", "ci": "#fdebd0", "run": "#e8daef", "mon": "#fadbd8", "lane": "#f4f6f7"}
+C = {
+    "data": "#d6eaf8", "ml": "#d5f5e3", "ci": "#fdebd0",
+    "run": "#e8daef", "mon": "#fadbd8", "lane": "#f4f6f7",
+}
 
 fig, ax = plt.subplots(figsize=(16, 9.2))
 ax.set_xlim(0, 160)
